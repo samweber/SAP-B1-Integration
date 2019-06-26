@@ -7,7 +7,7 @@ from flask_jwt_extended import (
 )
 from werkzeug.security import safe_str_cmp
 import logging
-from flask_mail import Mail
+#from flask_mail import Mail
 
 
 class User(object):
@@ -46,15 +46,15 @@ def create_app(config_module=None):
     app.config.from_object(config_module or
                            os.environ.get('FLASK_CONFIG') or
                            'config')
-    
 
-    app.config['MAIL_SERVER']='smtp.gmail.com'
-    app.config['MAIL_PORT'] = 465
-    app.config['MAIL_USERNAME'] = 'yourId@gmail.com'
-    app.config['MAIL_PASSWORD'] = '*****'
-    app.config['MAIL_USE_TLS'] = False
-    app.config['MAIL_USE_SSL'] = True
-    app.config['MAIL_DEFAULT_SENDER'] = 'yourId@gmail.com'
+
+    #app.config['MAIL_SERVER']='smtp.gmail.com'
+    #app.config['MAIL_PORT'] = 465
+    #app.config['MAIL_USERNAME'] = 'yourId@gmail.com'
+    #app.config['MAIL_PASSWORD'] = '*****'
+    #app.config['MAIL_USE_TLS'] = False
+    #app.config['MAIL_USE_SSL'] = True
+    #app.config['MAIL_DEFAULT_SENDER'] = 'yourId@gmail.com'
     #mail.init_app(app)
 
 

@@ -5,8 +5,8 @@ from time import time, strftime
 import decimal
 from pythoncom import CoInitialize
 import win32com.client.dynamic
-from flask_mail import Message
-
+#from flask_mail import Message
+import smtplib
 
 try:
     from flask import _app_ctx_stack as stack
@@ -34,7 +34,7 @@ class SapB1ComAdaptor(object):
         if result != 0:
             raise Exception("Not connected to COM %s" % result)
         print('Connected to COM')
-        
+
 
     def __del__(self):
         if self.company:
@@ -142,7 +142,7 @@ class SAPB1Adaptor(object):
         except AttributeError:
             ctx._COM = com = SapB1ComAdaptor(current_app.config)
             print(com.company.CompanyName)
-            log = "Open SAPB1 connection for " + com.company.CompanyName            
+            log = "Open SAPB1 connection for " + com.company.CompanyName
             current_app.logger.info(log)
             return com
 
@@ -176,7 +176,7 @@ class SAPB1Adaptor(object):
         args = {key: params[key]['value'] for key in params.keys()}
         print(sql)
         return list(self.sql_adaptor.fetch_all(sql, args=args))
-    
+
     def getDownPayment(self, num=1, columns=[], params={}):
         """Retreive Down Payments from SAP B1.
         """
@@ -235,21 +235,21 @@ class SAPB1Adaptor(object):
         print('Last CardCode:%s'%last_cardcode)
         next_cardcode = 'C%05d'%(int(last_cardcode.replace('C','').replace('c','')) + 1)
         print('Next CardCode:%s'%next_cardcode)
-        com = self.com_adaptor       
+        com = self.com_adaptor
         busPartner = com.company.GetBusinessObject(com.constants.oBusinessPartners)
         busPartner.CardCode = next_cardcode
-        cardname = customer['FirstName'] + ' ' + customer['LastName']        
+        cardname = customer['FirstName'] + ' ' + customer['LastName']
         busPartner.CardName = cardname
         busPartner.GroupCode = '158' #Otros
-        busPartner.Phone1 = customer["Phone"]        
-        busPartner.UserFields.Fields("LicTradNum").Value = customer['RFC'] 
-        busPartner.UserFields.Fields("Phone1").Value = customer['Phone'] 
+        busPartner.Phone1 = customer["Phone"]
+        busPartner.UserFields.Fields("LicTradNum").Value = customer['RFC']
+        busPartner.UserFields.Fields("Phone1").Value = customer['Phone']
         busPartner.UserFields.Fields("E_Mail").Value = customer['Email']
         #BP Address
         address = customer['Address']
         busPartner.Addresses.Add()
         busPartner.Addresses.SetCurrentLine(0)
-        busPartner.Addresses.AddressName = "Direccion"    
+        busPartner.Addresses.AddressName = "Direccion"
         busPartner.Addresses.Street = address['Street']
         busPartner.Addresses.StreetNo = address['StreetNo']
         busPartner.Addresses.Block = address['Block']
@@ -265,27 +265,27 @@ class SAPB1Adaptor(object):
         busPartner.ContactEmployees.FirstName = customer['FirstName']
         busPartner.ContactEmployees.LastName = customer['LastName']
         busPartner.ContactEmployees.Phone1 = customer["Phone"]
-        busPartner.ContactEmployees.E_Mail = customer["Email"]        
+        busPartner.ContactEmployees.E_Mail = customer["Email"]
         lRetCode = busPartner.Add()
         if lRetCode != 0:
             log = com.company.GetLastErrorDescription()
             current_app.logger.error(log)
-            raise Exception(log, customer)            
+            raise Exception(log, customer)
         return {'CardCode':next_cardcode}
 
     def updateBusinessPartner(self, CardCode, customer):
         """Update business partner by CardCode
         """
-        com = self.com_adaptor       
+        com = self.com_adaptor
         busPartner = com.company.GetBusinessObject(com.constants.oBusinessPartners)
         busPartner.GetByKey(CardCode);
-        busPartner.UserFields.Fields("Phone1").Value = customer['Phone'] 
+        busPartner.UserFields.Fields("Phone1").Value = customer['Phone']
         busPartner.UserFields.Fields("E_Mail").Value = customer['Email']
         #BP Address
         address = customer['Address']
         busPartner.Addresses.Add()
         busPartner.Addresses.SetCurrentLine(0)
-        busPartner.Addresses.AddressName = "Direccion"    
+        busPartner.Addresses.AddressName = "Direccion"
         busPartner.Addresses.Street = address['Street']
         busPartner.Addresses.StreetNo = address['StreetNo']
         busPartner.Addresses.Block = address['Block']
@@ -308,7 +308,7 @@ class SAPB1Adaptor(object):
             cols = " ,".join(columns)
 
         sql = """SELECT top {0} {1} FROM dbo.OCPR""".format(num, cols)
-        if contact:        
+        if contact:
             params = dict({(k, 'null' if v is None else v) for k, v in contact.items()})
         else:
             params = {}
@@ -418,7 +418,7 @@ class SAPB1Adaptor(object):
     def insertOrder(self, o):
         """Insert an order into SAP B1.
         """
-        com = self.com_adaptor    
+        com = self.com_adaptor
         order = com.company.GetBusinessObject(com.constants.oOrders)
         order.DocDueDate = o['doc_due_date']
         order.CardCode = 'C105212'
@@ -445,8 +445,8 @@ class SAPB1Adaptor(object):
             order.UserFields.Fields("U_web_cc_type").Value = 'DC'
 
         if o['user_id']:
-            order.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id']) 
-        
+            order.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id'])
+
         if 'order_shipping_cost' in o.keys():
             order.Expenses.ExpenseCode = 1
             order.Expenses.LineTotal = o['order_shipping_cost']
@@ -460,14 +460,14 @@ class SAPB1Adaptor(object):
          #   shipping = self.getShipCode(o['transport_name'])
           #  order.TrnspCode = shipping
 
-            
+
 
         # Set Payment Method
         if 'payment_method' in o.keys():
             order.PaymentMethod = o['payment_method']
-        
-        
-       
+
+
+
         ## Set bill to address properties
         order.AddressExtension.BillToCity = o['billto_city']
         order.AddressExtension.BillToCountry = o['billto_country']
@@ -507,18 +507,22 @@ class SAPB1Adaptor(object):
         if lRetCode != 0:
             error = str(self.com_adaptor.company.GetLastError())
             current_app.logger.error(error)
-            msg = Message("TEST", recipients = ['id1@gmail.com'])
-            msg.body = "This is a test."
-            #mail.send(msg)
+            #Send email error
+            smtp_server = smtplib.SMTP('smtp.gmail.com', 587)
+            smtp_server.ehlo()
+            smtp_server.starttls()
+            smtp_server.login('sender@sender.com', 'Password')
+            smtp_server.sendmail('replyto@sender.com', 'recipient@recipient.com', 'Subject: SAPB1Int: ORDR Error!\nError adding sales order ' + o['U_WebOrderId'] + '. Error ' + error + '. Fix issue, then manually import order.')
+            smtp_server.quit()
             raise Exception(error, o['U_WebOrderId'])
-        
+
         params = None
         params = {'U_WebOrderId': {'value': str(o['U_WebOrderId'])}}
         orders = self.getOrders(num=1, columns=['DocEntry', 'DocTotal', 'DocNum'], params=params)
         orderDocEntry = orders[0]['DocEntry']
         orderDocTotal = orders[0]['DocTotal']
         orderDocNum = orders[0]['DocNum']
-        
+
         if o['order_total'] > 0:
 
             if o['giftcard'] and o['giftcard_amount'] < o['order_total']:
@@ -569,7 +573,7 @@ class SAPB1Adaptor(object):
                         gcDownPayment.Lines.UnitPrice = float(item['price'])
                     i = i + 1
 
-                cashDownPayment.DocTotal = (float(orderDocTotal) - float(o['giftcard_amount']))    
+                cashDownPayment.DocTotal = (float(orderDocTotal) - float(o['giftcard_amount']))
                 lRetCode1 = cashDownPayment.Add()
 
                 if lRetCode1 != 0:
@@ -606,7 +610,7 @@ class SAPB1Adaptor(object):
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
                     raise Exception(error, o['U_WebOrderId'])
-                    
+
                 gcDownPayment.DocTotal = float(o['giftcard_amount'])
                 lRetCode2 = gcDownPayment.Add()
 
@@ -614,7 +618,7 @@ class SAPB1Adaptor(object):
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
                     raise Exception(error, o['U_WebOrderId'])
-            
+
                 #Linking Down Payment with Sales Order
                 downpayments1 = self.getDownPayment(num=1, columns=['DocEntry', 'DocTotal', 'DocDate'], params=params)
                 downPaymentDocEntry1 = downpayments1[0]['DocEntry']
@@ -629,7 +633,7 @@ class SAPB1Adaptor(object):
                                             """.format(downPaymentDocEntry1,orderDocEntry)
                     cursor = self.sql_adaptor.cursor
                     cursor.execute(link_downpayment_sql)
-                    self.sql_adaptor.conn.commit() 
+                    self.sql_adaptor.conn.commit()
 
                 gcIncomingPayments = com.company.GetBusinessObject(com.constants.oIncomingPayments)
                 gcIncomingPayments.Invoices.DocEntry = downPaymentDocEntry1
@@ -644,9 +648,9 @@ class SAPB1Adaptor(object):
                 if lRetCode2 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
-                    raise Exception(error, o['U_WebOrderId'])      
-                
-            
+                    raise Exception(error, o['U_WebOrderId'])
+
+
             elif o['giftcard'] and o['giftcard_amount'] >= o['order_total']:
                 downPayment = com.company.GetBusinessObject(com.constants.oDownPayments)
                 downPayment.DownPaymentType = com.constants.dptInvoice
@@ -682,7 +686,7 @@ class SAPB1Adaptor(object):
                         downPayment.Lines.UnitPrice = float(item['price'])
                     i = i + 1
 
-                downPayment.DocTotal = orderDocTotal    
+                downPayment.DocTotal = orderDocTotal
                 lRetCode1 = downPayment.Add()
                 if lRetCode1 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
@@ -702,7 +706,7 @@ class SAPB1Adaptor(object):
                                             """.format(downPaymentDocEntry,orderDocEntry)
                     cursor = self.sql_adaptor.cursor
                     cursor.execute(link_downpayment_sql)
-                    self.sql_adaptor.conn.commit() 
+                    self.sql_adaptor.conn.commit()
 
                 incomingPayments = com.company.GetBusinessObject(com.constants.oIncomingPayments)
                 incomingPayments = com.company.GetBusinessObject(com.constants.oIncomingPayments)
@@ -722,7 +726,7 @@ class SAPB1Adaptor(object):
                     raise Exception(error, o['U_WebOrderId'])
 
             else:
-                print("GIFTCARD NO")   
+                print("GIFTCARD NO")
                 downPayment = com.company.GetBusinessObject(com.constants.oDownPayments)
                 downPayment.DownPaymentType = com.constants.dptInvoice
                 downPayment.DocDueDate = o['doc_due_date']
@@ -757,7 +761,7 @@ class SAPB1Adaptor(object):
                         downPayment.Lines.UnitPrice = float(item['price'])
                     i = i + 1
 
-                downPayment.DocTotal = orderDocTotal    
+                downPayment.DocTotal = orderDocTotal
                 lRetCode1 = downPayment.Add()
                 if lRetCode1 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
@@ -777,7 +781,7 @@ class SAPB1Adaptor(object):
                                             """.format(downPaymentDocEntry,orderDocEntry)
                     cursor = self.sql_adaptor.cursor
                     cursor.execute(link_downpayment_sql)
-                    self.sql_adaptor.conn.commit() 
+                    self.sql_adaptor.conn.commit()
 
                 incomingPayments = com.company.GetBusinessObject(com.constants.oIncomingPayments)
                 incomingPayments.Invoices.DocEntry = downPaymentDocEntry
@@ -793,14 +797,14 @@ class SAPB1Adaptor(object):
                 if lRetCode2 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
-                    raise Exception(error, o['U_WebOrderId'])    
+                    raise Exception(error, o['U_WebOrderId'])
 
         return orderDocEntry
-        
+
     def insertQuotation(self, q):
         """Create a quotation into SAP B1.
         """
-        com = self.com_adaptor    
+        com = self.com_adaptor
         quotation = com.company.GetBusinessObject(com.constants.oQuotations)
         quotation.DocDueDate = q['doc_due_date']
         quotation.CardCode = q['card_code']
@@ -821,7 +825,7 @@ class SAPB1Adaptor(object):
             error = str(self.com_adaptor.company.GetLastError())
             current_app.logger.error(error)
             raise Exception(error)
-        
+
         quotation_sql = """SELECT top(1) DocEntry FROM dbo.OQUT
                             WHERE NumAtCard = %s"""
         sqlresult = self.sql_adaptor.fetchone(quotation_sql, q['num_at_card'])
@@ -885,7 +889,7 @@ class SAPB1Adaptor(object):
 #            shipmentId = shipment['DocEntry']
 #            shipment['items'] = self._getShipmentItems(shipmentId, itemColumns)
 #        return shipments
-    
+
     def getShipments(self, num=1, columns=[], params={}):
         """Retrieve orders from SAP B1.
         """
@@ -899,7 +903,7 @@ class SAPB1Adaptor(object):
         args = {key: params[key]['value'] for key in params.keys()}
         print(sql)
         return list(self.sql_adaptor.fetch_all(sql, args=args))
-    
+
     def getLineNum(self, sql):
         return list(self.sql_adaptor.fetch_all(sql))
 
@@ -931,7 +935,7 @@ class SAPB1Adaptor(object):
         orderDocTotal = orders[0]['DocTotal']
         orderDocNum = orders[0]['DocNum']
 
-        
+
 
         delivery.DocDueDate = o['doc_due_date']
         delivery.CardCode = 'C105212'
@@ -958,8 +962,8 @@ class SAPB1Adaptor(object):
             delivery.UserFields.Fields("U_web_cc_type").Value = 'DC'
 
         if o['user_id']:
-            delivery.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id']) 
-        
+            delivery.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id'])
+
         if 'order_shipping_cost' in o.keys():
             delivery.Expenses.ExpenseCode = 1
             delivery.Expenses.LineTotal = o['order_shipping_cost']
@@ -968,7 +972,7 @@ class SAPB1Adaptor(object):
             delivery.Expenses.BaseDocLine = 0
             delivery.Expenses.BaseDocType = 17
             #delivery.Expenses.BaseDocumentReference = orderDocNum
-           
+
 
         if 'discount_percent' in o.keys():
             delivery.DiscountPercent = o['discount_percent']
@@ -1000,7 +1004,7 @@ class SAPB1Adaptor(object):
         # Set Comments
         if 'comments' in o.keys():
             delivery.Comments = o['comments']
-        
+
         paramsOrderShip = {'DocEntry': {'value': str(orderDocEntry)}}
         orderShipInfo = self.getOrderShipInfo(num=1, columns=['DocEntry', 'LineTotal', 'ObjType', 'TaxCode', 'ExpnsCode', 'LineNum'], params=paramsOrderShip)
 
@@ -1012,10 +1016,10 @@ class SAPB1Adaptor(object):
             delivery.Lines.Quantity = float(item['quantity'])
             #delivery.Lines.BaseEntry = float(orderDocEntry)
             delivery.Lines.TaxCode = 'FLEX'
-            
+
             if item.get('price'):
                 delivery.Lines.UnitPrice = float(item['price'])
-            
+
             find_ordr_linenum_sql="""SELECT dbo.RDR1.LineNum
                                     FROM dbo.ORDR INNER JOIN dbo.RDR1 ON dbo.ORDR.DocEntry = dbo.RDR1.DocEntry
                                     WHERE dbo.ORDR.DocNum = '{0}' and dbo.RDR1.ItemCode = '{1}'
@@ -1050,9 +1054,13 @@ class SAPB1Adaptor(object):
         if lRetCode != 0:
             error = str(self.com_adaptor.company.GetLastError())
             current_app.logger.error(error)
-            #msg = Message("TEST", recipients = ['id1@gmail.com'])
-            #msg.body = "This is a test."
-            #mail.send(msg)
+            #Send email error
+            smtp_server = smtplib.SMTP('smtp.gmail.com', 587)
+            smtp_server.ehlo()
+            smtp_server.starttls()
+            smtp_server.login('sender@sender.com', 'Password')
+            smtp_server.sendmail('replyto@sender.com', 'recipient@recipient.com', 'Subject: SAPB1Int: ODLN Error!\nError adding delivery for ' + o['U_WebOrderId'] + '. Error ' + error + '. Fix issue, then manually import order.')
+            smtp_server.quit()
             raise Exception(error, o['U_WebOrderId'])
 
         deliveries =  self.getShipments(num=1, columns=['DocEntry', 'DocTotal', 'DocNum'], params=params)
@@ -1088,8 +1096,8 @@ class SAPB1Adaptor(object):
             invoice.UserFields.Fields("U_web_cc_type").Value = 'DC'
 
         if o['user_id']:
-            invoice.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id']) 
-        
+            invoice.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id'])
+
         if 'order_shipping_cost' in o.keys():
             invoice.Expenses.ExpenseCode = 1
             invoice.Expenses.LineTotal = o['order_shipping_cost']
@@ -1104,7 +1112,7 @@ class SAPB1Adaptor(object):
         # Set Shipping Type
         if 'transport_name' in o.keys():
             pass
-                
+
 
         # Set Payment Method
         if 'payment_method' in o.keys():
@@ -1136,10 +1144,10 @@ class SAPB1Adaptor(object):
             invoice.Lines.Quantity = float(item['quantity'])
             #delivery.Lines.BaseEntry = float(orderDocEntry)
             invoice.Lines.TaxCode = 'FLEX'
-            
+
             if item.get('price'):
                 invoice.Lines.UnitPrice = float(item['price'])
-            
+
             find_odln_linenum_sql="""SELECT dbo.DLN1.LineNum
                                     FROM dbo.ODLN INNER JOIN dbo.DLN1 ON dbo.ODLN.DocEntry = dbo.DLN1.DocEntry
                                     WHERE dbo.ODLN.DocNum = '{0}' and dbo.DLN1.ItemCode = '{1}'
@@ -1184,13 +1192,17 @@ class SAPB1Adaptor(object):
         if lRetCode != 0:
             error = str(self.com_adaptor.company.GetLastError())
             current_app.logger.error(error)
-            #msg = Message("TEST", recipients = ['id1@gmail.com'])
-            #msg.body = "This is a test."
-            #mail.send(msg)
+            #Send email error
+            smtp_server = smtplib.SMTP('smtp.gmail.com', 587)
+            smtp_server.ehlo()
+            smtp_server.starttls()
+            smtp_server.login('sender@sender.com', 'Password')
+            smtp_server.sendmail('replyto@sender.com', 'recipient@recipient.com', 'Subject: SAPB1Int: OINV Error!\nError adding invoice for ' + o['U_WebOrderId'] + '. Error ' + error + '. Fix issue, then manually import order.')
+            smtp_server.quit()
             raise Exception(error, o['U_WebOrderId'])
 
 
-        
+
 
 
     def getItems(self, limit=1, columns=None, whs=None, code=None):
@@ -1235,7 +1247,7 @@ class SAPB1Adaptor(object):
                      WHERE PriceList = {2}""".format(limit, cols, listNumber)
 
         return list(self.sql_adaptor.fetch_all(sql))
-    
+
     def getStockNum(self, limit=1, columns=None, whs=None, code=None):
         """Retrieve stock(products) from SAP B1."""
         if columns:
@@ -1246,7 +1258,7 @@ class SAPB1Adaptor(object):
         wclause = None
         if whs:
             wclause = """ WhsCode = '{0}' """.format(whs)
-            
+
         if code:
             sql = """SELECT {0} FROM dbo.OITW
                      WHERE ItemCode = '{1}' {2}""".format(cols, code, (" AND " + wclause) if wclause else '')
@@ -1254,4 +1266,3 @@ class SAPB1Adaptor(object):
             sql = """SELECT top {0} {1} FROM dbo.OITW {2}""".format(limit, cols, (" WHERE " + wclause) if wclause else '')
         print sql
         return list(self.sql_adaptor.fetch_all(sql))
-
