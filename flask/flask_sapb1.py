@@ -8,6 +8,7 @@ import win32com.client.dynamic
 #from flask_mail import Message
 import smtplib
 
+
 try:
     from flask import _app_ctx_stack as stack
 except ImportError:
@@ -172,7 +173,7 @@ class SAPB1Adaptor(object):
         ops = {key: '=' if 'op' not in params[key].keys() else params[key]['op'] for key in params.keys()}
         sql = """SELECT top {0} {1} FROM dbo.ORDR""".format(num, cols)
         if len(params) > 0:
-            sql = sql + ' WHERE ' + " AND ".join(["{0} {1} %({2})s".format(k, ops[k], k) for k in params.keys()])
+            sql = sql + ' WHERE ' + " AND ".join(["{0} {1} %({2})s".format(k, ops[k], k) for k in params.keys()]) + "Order by dbo.ORDR.DocNum DESC"
         args = {key: params[key]['value'] for key in params.keys()}
         print(sql)
         return list(self.sql_adaptor.fetch_all(sql, args=args))
@@ -198,33 +199,35 @@ class SAPB1Adaptor(object):
         sql = """SELECT MainCurncy FROM dbo.OADM"""
         return self.sql_adaptor.fetchone(sql)['MainCurncy']
 
-    def getShipCode(self, code):
+    def getShipCode(self, code): # Code is shipping text from Magento. Return code is U_TrnspCode from [dbo].[@RPC_WEBSHIP_MAP]
         if code == 'FedEx - Priority Overnight':
-            return 'FedEx Priority Overnight'
-        elif code == 'FedEx - 2 Day':
-            return 'FedEx 2 Day'
+            return 31  #'FedEx Priority Overnight'
+        elif code == 'FedEx - 2nd Day':
+            return 30  #'FedEx 2 Day'
         elif code == 'FedEx - International Priority':
-            return 'International Priority'
+            return 27  #'International Priority'
         elif code == 'FedEx - International Economy':
-            return 'International Economy'
+            return 38  #'International Economy'
         elif code == 'FedEx - Ground':
-            return 'FedEx Ground'
+            return 29  #'FedEx Ground'
         elif code == 'USPS - First-Class Mail':
-            return 'First Class Mail'
+            return 40  #'First Class Mail'
         elif code == 'UPS - Three-Day Select':
-            return '3 Day'
+            return 14 #'3 Day'
         elif code == 'UPS - Next Day Air Saver':
-            return 'Next Day Air Saver'
+            return 24  #'Next Day Air Saver'
         elif code == 'UPS - Next Day Air':
-            return 'Next Day Air'
+            return 2  #'Next Day Air'
         elif code == 'UPS - Second Day Air':
-            return 'Second Day Air'
+            return 13  #'Second Day Air'
+        elif code == 'USPS - Ground':
+            return 20  #'USPS Domestic Ground'
         elif code == 'USPS - Priority mail Express International':
-            return 'Priorty Mail International Express'
+            return 21  #'Priorty Mail International Express'
         elif code == 'USPS - Priority Mail International':
-            return 'Priority Mail International'
+            return 27  #'Priority Mail International'
         elif code == 'USPS - First-Class Package International Service':
-            return 'First-Class Package International Service'
+            return 22  #'First-Class Package International Service'
 
     def insertBusinessPartner(self, customer):
         """Insert a new business partner
@@ -299,6 +302,9 @@ class SAPB1Adaptor(object):
             current_app.logger.error(log)
             raise Exception(log)
         return {'CardCode':CardCode}
+
+    def getBusinessPartners(self):
+        pass
 
     def getContacts(self, num=1, columns=[], cardCode=None, contact={}):
         """Retrieve contacts under a business partner by CardCode from SAP B1.
@@ -420,6 +426,7 @@ class SAPB1Adaptor(object):
         """
         com = self.com_adaptor
         order = com.company.GetBusinessObject(com.constants.oOrders)
+        order.DocDate = o['order_date']
         order.DocDueDate = o['doc_due_date']
         order.CardCode = 'C105212'
         #order.NumAtCard = str(o['num_at_card'])
@@ -455,17 +462,14 @@ class SAPB1Adaptor(object):
         if 'discount_percent' in o.keys():
             order.DiscountPercent = o['discount_percent']
 
-        # Set Shipping Type
-        #if 'transport_name' in o.keys():
-         #   shipping = self.getShipCode(o['transport_name'])
-          #  order.TrnspCode = shipping
-
+        if 'transport_name' in o.keys():
+            code = self.getShipCode(o['transport_name'])
+            order.TransportationCode = code
 
 
         # Set Payment Method
         if 'payment_method' in o.keys():
             order.PaymentMethod = o['payment_method']
-
 
 
         ## Set bill to address properties
@@ -486,49 +490,74 @@ class SAPB1Adaptor(object):
         if 'comments' in o.keys():
             order.Comments = o['comments']
 
+
+        #loop through items in order
         i = 0
         for item in o['items']:
-            order.Lines.Add()
             order.Lines.SetCurrentLine(i)
             order.Lines.ItemCode = item['itemcode']
             order.Lines.TaxCode = 'FLEX'
             order.Lines.Quantity = float(item['quantity'])
-            if item.get('price'):
+            print(item['price'])
+            #order.lines.UnitPrice = item['price']
+            if item['discount_percent']:
                 order.Lines.UnitPrice = float(item['price'])
+                order.Lines.DiscountPercent = float(item['discount_percent'])
             i = i + 1
-        if o['order_tax'] != '0.00':
             order.Lines.Add()
+        if o['order_tax'] != '0.00':
             order.Lines.SetCurrentLine(i)
             order.Lines.ItemCode = 'SALESTAX'
             order.Lines.Quantity = 1
             order.Lines.TaxCode = 'FLEX'
             order.Lines.UnitPrice = o['order_tax']
+            order.Lines.Add()
         lRetCode = order.Add()
         if lRetCode != 0:
             error = str(self.com_adaptor.company.GetLastError())
             current_app.logger.error(error)
             #Send email error
-            smtp_server = smtplib.SMTP('smtp.gmail.com', 587)
-            smtp_server.ehlo()
-            smtp_server.starttls()
-            smtp_server.login('sender@sender.com', 'Password')
-            smtp_server.sendmail('replyto@sender.com', 'recipient@recipient.com', 'Subject: SAPB1Int: ORDR Error!\nError adding sales order ' + o['U_WebOrderId'] + '. Error ' + error + '. Fix issue, then manually import order.')
-            smtp_server.quit()
+            fromaddr = 'sapb1@riflepaperco.com'
+            toaddrs  = 'helpdesk@riflepaperco.com'
+            msg = "\r\n".join([
+              "From: sapb1@riflepaperco.com",
+              "To: helpdesk@riflepaperco.com",
+              "Subject: SAPB1Int: Error adding Sales Order " + o['U_WebOrderId'],
+              "",
+              "Error adding Sales Order (ORDR) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually import order."
+              ])
+            username = 'apps@riflepaperco.com'
+            password = 'pass'
+            server = smtplib.SMTP('smtp.gmail.com:587')
+            server.starttls()
+            server.login(username,password)
+            server.sendmail(fromaddr, toaddrs, msg)
+            server.quit()
             raise Exception(error, o['U_WebOrderId'])
 
         params = None
         params = {'U_WebOrderId': {'value': str(o['U_WebOrderId'])}}
         orders = self.getOrders(num=1, columns=['DocEntry', 'DocTotal', 'DocNum'], params=params)
-        orderDocEntry = orders[0]['DocEntry']
-        orderDocTotal = orders[0]['DocTotal']
-        orderDocNum = orders[0]['DocNum']
+        find_order_sql = """
+                            SELECT top 1 dbo.ORDR.DocEntry, dbo.ORDR.DocNum, dbo.ORDR.DocTotal
+                            FROM dbo.ORDR
+                            WHERE dbo.ORDR.U_WebOrderId='{0}'
+                            ORDER BY dbo.ORDR.DocNum DESC
+                        """.format(o['U_WebOrderId'])
+
+        latestOrder = self.getLatestOrder(find_order_sql)
+        print(latestOrder)
+        orderDocEntry = latestOrder[0]['DocEntry']
+        orderDocTotal = latestOrder[0]['DocTotal']
+        orderDocNum = latestOrder[0]['DocNum']
 
         if o['order_total'] > 0:
 
-            if o['giftcard'] and o['giftcard_amount'] < o['order_total']:
+            if o['giftcard'] and o['giftcard_amount'] < o['order_total'] and o['giftcard_amount'] != '0.0000':
                 print("DOUBLE DOWN PAYMENT")
                 cashDownPayment = com.company.GetBusinessObject(com.constants.oDownPayments)
                 cashDownPayment.DownPaymentType = com.constants.dptInvoice
+                cashDownPayment.DocDate = o['order_date']
                 cashDownPayment.DocDueDate = o['doc_due_date']
                 cashDownPayment.CardCode = 'C105212'
                 cashDownPayment.UserFields.Fields("U_WebOrderId").Value = str(o['U_WebOrderId'])
@@ -542,36 +571,15 @@ class SAPB1Adaptor(object):
                 cashDownPayment.UserFields.Fields("U_Web_CC_Last4").Value = str(o['cc_last4'])
                 cashDownPayment.UserFields.Fields("U_TWBS_ShipTo_Email").Value = str(o['order_email'])
 
-                gcDownPayment = com.company.GetBusinessObject(com.constants.oDownPayments)
-                gcDownPayment.DownPaymentType = com.constants.dptInvoice
-                gcDownPayment.DocDueDate = o['doc_due_date']
-                gcDownPayment.CardCode = 'C105212'
-                gcDownPayment.UserFields.Fields("U_WebOrderId").Value = str(o['U_WebOrderId'])
-                gcDownPayment.UserFields.Fields("U_OrderSource").Value = 'Web Order'
-                gcDownPayment.UserFields.Fields("U_TWBS_ShipTo_FName").Value = str(o['shipping_first_name'])
-                gcDownPayment.UserFields.Fields("U_TWBS_ShipTo_Lname").Value = str(o['shipping_last_name'])
-                gcDownPayment.UserFields.Fields("U_web_order_fname").Value = str(o['order_first_name'])
-                gcDownPayment.UserFields.Fields("U_web_order_lname").Value = str(o['order_last_name'])
-                gcDownPayment.UserFields.Fields("U_web_orderphone").Value = str(o['order_phone'])
-                gcDownPayment.UserFields.Fields("U_web_shipphone").Value = str(o['shipping_phone'])
-                gcDownPayment.UserFields.Fields("U_Web_CC_Last4").Value = str(o['cc_last4'])
-                gcDownPayment.UserFields.Fields("U_TWBS_ShipTo_Email").Value = str(o['order_email'])
-
                 i = 0
                 for item in o['items']:
-                    cashDownPayment.Lines.Add()
                     cashDownPayment.Lines.SetCurrentLine(i)
                     cashDownPayment.Lines.ItemCode = item['itemcode']
                     cashDownPayment.Lines.Quantity = float(item['quantity'])
                     if item.get('price'):
                         cashDownPayment.Lines.UnitPrice = float(item['price'])
-                    gcDownPayment.Lines.Add()
-                    gcDownPayment.Lines.SetCurrentLine(i)
-                    gcDownPayment.Lines.ItemCode = item['itemcode']
-                    gcDownPayment.Lines.Quantity = float(item['quantity'])
-                    if item.get('price'):
-                        gcDownPayment.Lines.UnitPrice = float(item['price'])
                     i = i + 1
+                    cashDownPayment.Lines.Add()
 
                 cashDownPayment.DocTotal = (float(orderDocTotal) - float(o['giftcard_amount']))
                 lRetCode1 = cashDownPayment.Add()
@@ -579,13 +587,38 @@ class SAPB1Adaptor(object):
                 if lRetCode1 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
-                    raise Exception(error, o['U_WebOrderId'])
+                    #Send email error
+                    fromaddr = 'sapb1@riflepaperco.com'
+                    toaddrs  = 'helpdesk@riflepaperco.com'
+                    msg = "\r\n".join([
+                      "From: sapb1@riflepaperco.com",
+                      "To: helpdesk@riflepaperco.com",
+                      "Subject: SAPB1Int: Error adding DPI " + o['U_WebOrderId'],
+                      "",
+                      "Error adding Downpayment Invoice (ODPI) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually create DPI."
+                      ])
+                    username = 'apps@riflepaperco.com'
+                    password = 'pass'
+                    server = smtplib.SMTP('smtp.gmail.com:587')
+                    server.starttls()
+                    server.login(username,password)
+                    server.sendmail(fromaddr, toaddrs, msg)
+                    server.quit()
+                    raise Exception(error, o['U_WebOrderId'], o['items'])
 
-                downpayments = self.getDownPayment(num=1, columns=['DocEntry', 'DocTotal', 'DocDate'], params=params)
+                find_latest_dpi="""
+                    SELECT dbo.ODPI.DocEntry, dbo.ODPI.DocTotal, dbo.ODPI.DocDate
+                    FROM dbo.ODPI
+                    WHERE dbo.ODPI.U_WebOrderId = '{0}' and dbo.ODPI.DocStatus='O'
+                    ORDER BY dbo.ODPI.DocNum DESC
+                """.format(o['U_WebOrderId'])
+
+                downpayments = self.getLineNum(find_latest_dpi)
+
                 downPaymentDocEntry = downpayments[0]['DocEntry']
                 downPaymentDocTotal = downpayments[0]['DocTotal']
                 downPaymentDocDate = downpayments[0]['DocDate']
-                if orderDocEntry:
+                if downPaymentDocEntry:
                     link_downpayment_sql= """UPDATE dbo.DPI1
                                                 SET dbo.DPI1.BaseRef = q.DocNum, dbo.DPI1.BaseType = 17, dbo.DPI1.BaseEntry = q.DocEntry
                                                 FROM dbo.ORDR q
@@ -604,12 +637,58 @@ class SAPB1Adaptor(object):
                 cashIncomingPayments.TransferAccount = '_SYS00000000166'
                 cashIncomingPayments.TransferReference = o['U_WebOrderId']
                 cashIncomingPayments.CardCode = 'C105212'
+                cashIncomingPayments.DocDate = downPaymentDocDate
                 cashIncomingPayments.TransferDate = downPaymentDocDate
                 lRetCode3 = cashIncomingPayments.Add()
                 if lRetCode3 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
+                    #Send email error
+                    fromaddr = 'sapb1@riflepaperco.com'
+                    toaddrs  = 'helpdesk@riflepaperco.com'
+                    msg = "\r\n".join([
+                      "From: sapb1@riflepaperco.com",
+                      "To: helpdesk@riflepaperco.com",
+                      "Subject: SAPB1Int: Error adding Payment " + o['U_WebOrderId'],
+                      "",
+                      "Error adding Incoming Payment (ORCT) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually create payment."
+                      ])
+                    username = 'apps@riflepaperco.com'
+                    password = 'pass'
+                    server = smtplib.SMTP('smtp.gmail.com:587')
+                    server.starttls()
+                    server.login(username,password)
+                    server.sendmail(fromaddr, toaddrs, msg)
+                    server.quit()
                     raise Exception(error, o['U_WebOrderId'])
+
+
+                gcDownPayment = com.company.GetBusinessObject(com.constants.oDownPayments)
+                gcDownPayment.DownPaymentType = com.constants.dptInvoice
+                gcDownPayment.DocDate = o['order_date']
+                gcDownPayment.DocDueDate = o['doc_due_date']
+                gcDownPayment.CardCode = 'C105212'
+                gcDownPayment.UserFields.Fields("U_WebOrderId").Value = str(o['U_WebOrderId'])
+                gcDownPayment.UserFields.Fields("U_OrderSource").Value = 'Web Order'
+                gcDownPayment.UserFields.Fields("U_TWBS_ShipTo_FName").Value = str(o['shipping_first_name'])
+                gcDownPayment.UserFields.Fields("U_TWBS_ShipTo_Lname").Value = str(o['shipping_last_name'])
+                gcDownPayment.UserFields.Fields("U_web_order_fname").Value = str(o['order_first_name'])
+                gcDownPayment.UserFields.Fields("U_web_order_lname").Value = str(o['order_last_name'])
+                gcDownPayment.UserFields.Fields("U_web_orderphone").Value = str(o['order_phone'])
+                gcDownPayment.UserFields.Fields("U_web_shipphone").Value = str(o['shipping_phone'])
+                gcDownPayment.UserFields.Fields("U_Web_CC_Last4").Value = str(o['cc_last4'])
+                gcDownPayment.UserFields.Fields("U_TWBS_ShipTo_Email").Value = str(o['order_email'])
+
+                i = 0
+                for item in o['items']:
+                    gcDownPayment.Lines.SetCurrentLine(i)
+                    gcDownPayment.Lines.ItemCode = item['itemcode']
+                    gcDownPayment.Lines.Quantity = float(item['quantity'])
+                    if item.get('price'):
+                        gcDownPayment.Lines.UnitPrice = float(item['price'])
+                    i = i + 1
+                    gcDownPayment.Lines.Add()
+
 
                 gcDownPayment.DocTotal = float(o['giftcard_amount'])
                 lRetCode2 = gcDownPayment.Add()
@@ -617,10 +696,34 @@ class SAPB1Adaptor(object):
                 if lRetCode2 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
-                    raise Exception(error, o['U_WebOrderId'])
+                    #Send email error
+                    fromaddr = 'sapb1@riflepaperco.com'
+                    toaddrs  = 'helpdesk@riflepaperco.com'
+                    msg = "\r\n".join([
+                      "From: sapb1@riflepaperco.com",
+                      "To: helpdesk@riflepaperco.com",
+                      "Subject: SAPB1Int: Error adding Payment " + o['U_WebOrderId'],
+                      "",
+                      "Error adding Incoming Payment (ORCT) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually create payment."
+                      ])
+                    username = 'apps@riflepaperco.com'
+                    password = 'pass'
+                    server = smtplib.SMTP('smtp.gmail.com:587')
+                    server.starttls()
+                    server.login(username,password)
+                    server.sendmail(fromaddr, toaddrs, msg)
+                    server.quit()
+                    raise Exception(error, o['U_WebOrderId'], "second gift card error")
 
                 #Linking Down Payment with Sales Order
-                downpayments1 = self.getDownPayment(num=1, columns=['DocEntry', 'DocTotal', 'DocDate'], params=params)
+                find_latest_dpi="""
+                    SELECT dbo.ODPI.DocEntry, dbo.ODPI.DocTotal, dbo.ODPI.DocDate
+                    FROM dbo.ODPI
+                    WHERE dbo.ODPI.U_WebOrderId = '{0}' and dbo.ODPI.DocStatus='O'
+                    ORDER BY dbo.ODPI.DocNum DESC
+                """.format(o['U_WebOrderId'])
+
+                downpayments1 = self.getLineNum(find_latest_dpi)
                 downPaymentDocEntry1 = downpayments1[0]['DocEntry']
                 downPaymentDocTotal1 = downpayments1[0]['DocTotal']
                 downPaymentDocDate1 = downpayments1[0]['DocDate']
@@ -643,17 +746,36 @@ class SAPB1Adaptor(object):
                 gcIncomingPayments.TransferAccount = '_SYS00000000517'
                 gcIncomingPayments.TransferReference = o['U_WebOrderId']
                 gcIncomingPayments.CardCode = 'C105212'
+                gcIncomingPayments.DocDate = downPaymentDocDate
                 gcIncomingPayments.TransferDate = downPaymentDocDate1
-                lRetCode2 = gcIncomingPayments.Add()
-                if lRetCode2 != 0:
+                lRetCode4 = gcIncomingPayments.Add()
+                if lRetCode4 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
+                    #Send email error
+                    fromaddr = 'sapb1@riflepaperco.com'
+                    toaddrs  = 'helpdesk@riflepaperco.com'
+                    msg = "\r\n".join([
+                      "From: sapb1@riflepaperco.com",
+                      "To: helpdesk@riflepaperco.com",
+                      "Subject: SAPB1Int: Error adding Payment " + o['U_WebOrderId'],
+                      "",
+                      "Error adding Incoming Payment (ORCT) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually create payment."
+                      ])
+                    username = 'apps@riflepaperco.com'
+                    password = 'pass'
+                    server = smtplib.SMTP('smtp.gmail.com:587')
+                    server.starttls()
+                    server.login(username,password)
+                    server.sendmail(fromaddr, toaddrs, msg)
+                    server.quit()
                     raise Exception(error, o['U_WebOrderId'])
 
 
             elif o['giftcard'] and o['giftcard_amount'] >= o['order_total']:
                 downPayment = com.company.GetBusinessObject(com.constants.oDownPayments)
                 downPayment.DownPaymentType = com.constants.dptInvoice
+                downPayment.DocDate = o['order_date']
                 downPayment.DocDueDate = o['doc_due_date']
                 downPayment.CardCode = 'C105212'
                 #order.NumAtCard = str(o['num_at_card'])
@@ -675,7 +797,6 @@ class SAPB1Adaptor(object):
 
                 i = 0
                 for item in o['items']:
-                    downPayment.Lines.Add()
                     downPayment.Lines.SetCurrentLine(i)
                 # downPayment.Lines.BaseLine = i
                 # downPayment.Lines.BaseEntry = orderDocEntry
@@ -685,12 +806,30 @@ class SAPB1Adaptor(object):
                     if item.get('price'):
                         downPayment.Lines.UnitPrice = float(item['price'])
                     i = i + 1
+                    downPayment.Lines.Add()
 
                 downPayment.DocTotal = orderDocTotal
                 lRetCode1 = downPayment.Add()
                 if lRetCode1 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
+                    #Send email error
+                    fromaddr = 'sapb1@riflepaperco.com'
+                    toaddrs  = 'helpdesk@riflepaperco.com'
+                    msg = "\r\n".join([
+                      "From: sapb1@riflepaperco.com",
+                      "To: helpdesk@riflepaperco.com",
+                      "Subject: SAPB1Int: Error adding DPI " + o['U_WebOrderId'],
+                      "",
+                      "Error adding Downpayment Invoice (ODPI) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually create DPI."
+                      ])
+                    username = 'apps@riflepaperco.com'
+                    password = 'pass'
+                    server = smtplib.SMTP('smtp.gmail.com:587')
+                    server.starttls()
+                    server.login(username,password)
+                    server.sendmail(fromaddr, toaddrs, msg)
+                    server.quit()
                     raise Exception(error, o['U_WebOrderId'])
                 #Linking Down Payment with Sales Order
                 downpayments = self.getDownPayment(num=1, columns=['DocEntry', 'DocTotal', 'DocDate'], params=params)
@@ -717,18 +856,37 @@ class SAPB1Adaptor(object):
                 #incomingPayments.Comments = 'Created by Integration'
                 incomingPayments.TransferAccount = '_SYS00000000517'
                 incomingPayments.TransferReference = o['U_WebOrderId']
+                incomingPayments.DocDate = downPaymentDocDate
                 incomingPayments.TransferDate = downPaymentDocDate
                 incomingPayments.TransferSum = downPaymentDocTotal
                 lRetCode2 = incomingPayments.Add()
                 if lRetCode2 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
+                    #Send email error
+                    fromaddr = 'sapb1@riflepaperco.com'
+                    toaddrs  = 'helpdesk@riflepaperco.com'
+                    msg = "\r\n".join([
+                      "From: sapb1@riflepaperco.com",
+                      "To: helpdesk@riflepaperco.com",
+                      "Subject: SAPB1Int: Error adding Payment " + o['U_WebOrderId'],
+                      "",
+                      "Error adding Incoming Payment (ORCT) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually create payment."
+                      ])
+                    username = 'apps@riflepaperco.com'
+                    password = 'pass'
+                    server = smtplib.SMTP('smtp.gmail.com:587')
+                    server.starttls()
+                    server.login(username,password)
+                    server.sendmail(fromaddr, toaddrs, msg)
+                    server.quit()
                     raise Exception(error, o['U_WebOrderId'])
 
             else:
                 print("GIFTCARD NO")
                 downPayment = com.company.GetBusinessObject(com.constants.oDownPayments)
                 downPayment.DownPaymentType = com.constants.dptInvoice
+                downPayment.DocDate = o['order_date']
                 downPayment.DocDueDate = o['doc_due_date']
                 downPayment.CardCode = 'C105212'
                 #order.NumAtCard = str(o['num_at_card'])
@@ -750,7 +908,6 @@ class SAPB1Adaptor(object):
 
                 i = 0
                 for item in o['items']:
-                    downPayment.Lines.Add()
                     downPayment.Lines.SetCurrentLine(i)
                 # downPayment.Lines.BaseLine = i
                 # downPayment.Lines.BaseEntry = orderDocEntry
@@ -760,19 +917,37 @@ class SAPB1Adaptor(object):
                     if item.get('price'):
                         downPayment.Lines.UnitPrice = float(item['price'])
                     i = i + 1
+                    downPayment.Lines.Add()
 
                 downPayment.DocTotal = orderDocTotal
                 lRetCode1 = downPayment.Add()
                 if lRetCode1 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
+                    #Send email error
+                    fromaddr = 'sapb1@riflepaperco.com'
+                    toaddrs  = 'helpdesk@riflepaperco.com'
+                    msg = "\r\n".join([
+                      "From: sapb1@riflepaperco.com",
+                      "To: helpdesk@riflepaperco.com",
+                      "Subject: SAPB1Int: Error adding DPI " + o['U_WebOrderId'],
+                      "",
+                      "Error adding Downpayment Invoice (ODPI) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually create DPI."
+                      ])
+                    username = 'apps@riflepaperco.com'
+                    password = 'pass'
+                    server = smtplib.SMTP('smtp.gmail.com:587')
+                    server.starttls()
+                    server.login(username,password)
+                    server.sendmail(fromaddr, toaddrs, msg)
+                    server.quit()
                     raise Exception(error, o['U_WebOrderId'])
                 #Linking Down Payment with Sales Order
                 downpayments = self.getDownPayment(num=1, columns=['DocEntry', 'DocTotal', 'DocDate'], params=params)
                 downPaymentDocEntry = downpayments[0]['DocEntry']
                 downPaymentDocTotal = downpayments[0]['DocTotal']
                 downPaymentDocDate = downpayments[0]['DocDate']
-                if orderDocEntry:
+                if downPaymentDocEntry:
                     link_downpayment_sql= """UPDATE dbo.DPI1
                                                 SET dbo.DPI1.BaseRef = q.DocNum, dbo.DPI1.BaseType = 17, dbo.DPI1.BaseEntry = q.DocEntry
                                                 FROM dbo.ORDR q
@@ -791,12 +966,30 @@ class SAPB1Adaptor(object):
                 #incomingPayments.Comments = 'Created by Integration'
                 incomingPayments.TransferAccount = '_SYS00000000166'
                 incomingPayments.TransferReference = o['U_WebOrderId']
+                incomingPayments.DocDate = downPaymentDocDate
                 incomingPayments.TransferDate = downPaymentDocDate
                 incomingPayments.TransferSum = downPaymentDocTotal
                 lRetCode2 = incomingPayments.Add()
                 if lRetCode2 != 0:
                     error = str(self.com_adaptor.company.GetLastError())
                     current_app.logger.error(error)
+                    #Send email error
+                    fromaddr = 'sapb1@riflepaperco.com'
+                    toaddrs  = 'helpdesk@riflepaperco.com'
+                    msg = "\r\n".join([
+                      "From: sapb1@riflepaperco.com",
+                      "To: helpdesk@riflepaperco.com",
+                      "Subject: SAPB1Int: Error adding Payment " + o['U_WebOrderId'],
+                      "",
+                      "Error adding Incoming Payment (ORCT) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually create payment."
+                      ])
+                    username = 'apps@riflepaperco.com'
+                    password = 'pass'
+                    server = smtplib.SMTP('smtp.gmail.com:587')
+                    server.starttls()
+                    server.login(username,password)
+                    server.sendmail(fromaddr, toaddrs, msg)
+                    server.quit()
                     raise Exception(error, o['U_WebOrderId'])
 
         return orderDocEntry
@@ -907,6 +1100,9 @@ class SAPB1Adaptor(object):
     def getLineNum(self, sql):
         return list(self.sql_adaptor.fetch_all(sql))
 
+    def getLatestOrder(self, sql):
+        return list(self.sql_adaptor.fetch_all(sql))
+
     def getOrderShipInfo(self, num=1, columns=[], params={}):
         """Retrieve order shipping info from SAP B1.
         """
@@ -930,216 +1126,262 @@ class SAPB1Adaptor(object):
         params = None
         print(str(o['U_WebOrderId']))
         params = {'U_WebOrderId': {'value': str(o['U_WebOrderId'])}}
-        orders = self.getOrders(num=1, columns=['DocEntry', 'DocTotal', 'DocNum'], params=params)
-        orderDocEntry = orders[0]['DocEntry']
-        orderDocTotal = orders[0]['DocTotal']
-        orderDocNum = orders[0]['DocNum']
+        # orders = self.getOrders(num=1, columns=['DocEntry', 'DocTotal', 'DocNum'], params=params)
+        find_order_sql = """
+                            SELECT top 1 dbo.ORDR.DocEntry, dbo.ORDR.DocNum, dbo.ORDR.DocTotal
+                            FROM dbo.ORDR
+                            WHERE dbo.ORDR.U_WebOrderId='{0}' and dbo.ORDR.DocStatus = 'O'
+                            ORDER BY dbo.ORDR.DocNum DESC
+                        """.format(o['U_WebOrderId'])
+
+        latestOrder = self.getLatestOrder(find_order_sql)
+
+        orderDocEntry = latestOrder[0]['DocEntry']
+        orderDocTotal = latestOrder[0]['DocTotal']
+        orderDocNum = latestOrder[0]['DocNum']
 
 
-
+        delivery.DocDate = o['order_date']
         delivery.DocDueDate = o['doc_due_date']
         delivery.CardCode = 'C105212'
         #order.NumAtCard = str(o['num_at_card'])
         # UDF for Magento Web Order ID
-        delivery.UserFields.Fields("U_OrderSource").Value = 'Web Order'
-        delivery.UserFields.Fields("U_WebOrderId").Value = str(o['U_WebOrderId'])
-        delivery.UserFields.Fields("U_TWBS_ShipTo_FName").Value = str(o['shipping_first_name'])
-        delivery.UserFields.Fields("U_TWBS_ShipTo_Lname").Value = str(o['shipping_last_name'])
-        delivery.UserFields.Fields("U_web_order_fname").Value = str(o['order_first_name'])
-        delivery.UserFields.Fields("U_web_order_lname").Value = str(o['order_last_name'])
-        delivery.UserFields.Fields("U_web_orderphone").Value = str(o['order_phone'])
-        delivery.UserFields.Fields("U_web_shipphone").Value = str(o['shipping_phone'])
-        delivery.UserFields.Fields("U_Web_CC_Last4").Value = str(o['cc_last4'])
-        delivery.UserFields.Fields("U_TWBS_ShipTo_Email").Value = str(o['order_email'])
+        # delivery.UserFields.Fields("U_OrderSource").Value = 'Web Order'
+        # delivery.UserFields.Fields("U_WebOrderId").Value = str(o['U_WebOrderId'])
+        # delivery.UserFields.Fields("U_TWBS_ShipTo_FName").Value = str(o['shipping_first_name'])
+        # delivery.UserFields.Fields("U_TWBS_ShipTo_Lname").Value = str(o['shipping_last_name'])
+        # delivery.UserFields.Fields("U_web_order_fname").Value = str(o['order_first_name'])
+        # delivery.UserFields.Fields("U_web_order_lname").Value = str(o['order_last_name'])
+        # delivery.UserFields.Fields("U_web_orderphone").Value = str(o['order_phone'])
+        # delivery.UserFields.Fields("U_web_shipphone").Value = str(o['shipping_phone'])
+        # delivery.UserFields.Fields("U_Web_CC_Last4").Value = str(o['cc_last4'])
+        # delivery.UserFields.Fields("U_TWBS_ShipTo_Email").Value = str(o['order_email'])
 
-        if o['cc_type'] == 'MASTERCARD':
-            delivery.UserFields.Fields("U_web_cc_type").Value = 'MC'
-        elif o['cc_type'] == 'VISA':
-            delivery.UserFields.Fields("U_web_cc_type").Value = 'VISA'
-        elif o['cc_type'] == 'AMERICAN EXPRESS':
-            delivery.UserFields.Fields("U_web_cc_type").Value = 'AMEX'
-        elif o['cc_type'] == 'DISCOVER':
-            delivery.UserFields.Fields("U_web_cc_type").Value = 'DC'
+        # if o['cc_type'] == 'MASTERCARD':
+        #     delivery.UserFields.Fields("U_web_cc_type").Value = 'MC'
+        # elif o['cc_type'] == 'VISA':
+        #     delivery.UserFields.Fields("U_web_cc_type").Value = 'VISA'
+        # elif o['cc_type'] == 'AMERICAN EXPRESS':
+        #     delivery.UserFields.Fields("U_web_cc_type").Value = 'AMEX'
+        # elif o['cc_type'] == 'DISCOVER':
+        #     delivery.UserFields.Fields("U_web_cc_type").Value = 'DC'
 
-        if o['user_id']:
-            delivery.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id'])
+        # if o['user_id']:
+        #     delivery.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id'])
 
         if 'order_shipping_cost' in o.keys():
-            delivery.Expenses.ExpenseCode = 1
-            delivery.Expenses.LineTotal = o['order_shipping_cost']
-            delivery.Expenses.TaxCode = 'FLEX'
-            delivery.Expenses.BaseDocEntry = orderDocEntry
-            delivery.Expenses.BaseDocLine = 0
-            delivery.Expenses.BaseDocType = 17
-            #delivery.Expenses.BaseDocumentReference = orderDocNum
+            find_ship_sql = """
+            SELECT dbo.RDR3.LineTotal
+            FROM dbo.ORDR inner join dbo.RDR3 ON dbo.ORDR.DocEntry = dbo.RDR3.DocEntry
+            WHERE dbo.ORDR.DocNum={0} and dbo.RDR3.Status='O'
+            ORDER BY dbo.ORDR.DocNum DESC
+            """.format(orderDocNum)
 
 
-        if 'discount_percent' in o.keys():
-            delivery.DiscountPercent = o['discount_percent']
+            shiptotal = self.getLineNum(find_ship_sql)
+            if shiptotal:
+                delivery.Expenses.ExpenseCode = 1
+                delivery.Expenses.LineTotal = shiptotal[0]['LineTotal']
+                delivery.Expenses.TaxCode = 'FLEX'
+                delivery.Expenses.BaseDocEntry = orderDocEntry
+                delivery.Expenses.BaseDocLine = 0
+                delivery.Expenses.BaseDocType = 17
+                # delivery.Expenses.BaseDocumentReference = orderDocNum
 
-        # Set Shipping Type
-        if 'transport_name' in o.keys():
-            #order.TransportationCode = self.getTrnspCode(o['transport_name'])
-            if o['transport_name'] == 'fe_dex_three_day':
-                order.TransportationCode = '3 Day Shipping'
 
-        # Set Payment Method
-        if 'payment_method' in o.keys():
-            delivery.PaymentMethod = o['payment_method']
+        # # if 'discount_percent' in o.keys():
+        # #     delivery.DiscountPercent = o['discount_percent']
 
-        ## Set bill to address properties
-        delivery.AddressExtension.BillToCity = o['billto_city']
-        delivery.AddressExtension.BillToCountry = o['billto_country']
-        delivery.AddressExtension.BillToState = o['billto_state']
-        delivery.AddressExtension.BillToStreet = o['billto_address']
-        delivery.AddressExtension.BillToZipCode = o['billto_zipcode']
+        # # Set Shipping Type
+        # if 'transport_name' in o.keys():
+        #     code = self.getShipCode(o['transport_name'])
+        #     delivery.TransportationCode = code
 
-        ## Set ship to address properties
-        delivery.AddressExtension.ShipToCity = o['shipto_city']
-        delivery.AddressExtension.ShipToCountry = o['shipto_country']
-        delivery.AddressExtension.ShipToState = o['shipto_state']
-        delivery.AddressExtension.ShipToStreet = o['shipto_address']
-        delivery.AddressExtension.ShipToZipCode = o['shipto_zipcode']
+        # # Set Payment Method
+        # if 'payment_method' in o.keys():
+        #     delivery.PaymentMethod = o['payment_method']
 
-        # Set Comments
-        if 'comments' in o.keys():
-            delivery.Comments = o['comments']
+        # ## Set bill to address properties
+        # delivery.AddressExtension.BillToCity = o['billto_city']
+        # delivery.AddressExtension.BillToCountry = o['billto_country']
+        # delivery.AddressExtension.BillToState = o['billto_state']
+        # delivery.AddressExtension.BillToStreet = o['billto_address']
+        # delivery.AddressExtension.BillToZipCode = o['billto_zipcode']
 
-        paramsOrderShip = {'DocEntry': {'value': str(orderDocEntry)}}
-        orderShipInfo = self.getOrderShipInfo(num=1, columns=['DocEntry', 'LineTotal', 'ObjType', 'TaxCode', 'ExpnsCode', 'LineNum'], params=paramsOrderShip)
+        # ## Set ship to address properties
+        # delivery.AddressExtension.ShipToCity = o['shipto_city']
+        # delivery.AddressExtension.ShipToCountry = o['shipto_country']
+        # delivery.AddressExtension.ShipToState = o['shipto_state']
+        # delivery.AddressExtension.ShipToStreet = o['shipto_address']
+        # delivery.AddressExtension.ShipToZipCode = o['shipto_zipcode']
 
+        # # Set Comments
+        # if 'comments' in o.keys():
+        #     delivery.Comments = o['comments']
+
+        # paramsOrderShip = {'DocEntry': {'value': str(orderDocEntry)}}
+        # orderShipInfo = self.getOrderShipInfo(num=1, columns=['DocEntry', 'LineTotal', 'ObjType', 'TaxCode', 'ExpnsCode', 'LineNum'], params=paramsOrderShip)
+
+        testarr = []
         i = 0
         for item in o['items']:
-            delivery.Lines.Add()
-            delivery.Lines.SetCurrentLine(i)
-            delivery.Lines.ItemCode = item['itemcode']
+            # delivery.Lines.SetCurrentLine(i)
             delivery.Lines.Quantity = float(item['quantity'])
             #delivery.Lines.BaseEntry = float(orderDocEntry)
             delivery.Lines.TaxCode = 'FLEX'
 
-            if item.get('price'):
-                delivery.Lines.UnitPrice = float(item['price'])
+            # if item.get('price'):
+            #     delivery.Lines.UnitPrice = float(item['price'])
 
-            find_ordr_linenum_sql="""SELECT dbo.RDR1.LineNum
+            find_ordr_linenum_sql="""SELECT dbo.RDR1.LineNum, dbo.RDR1.ItemCode
                                     FROM dbo.ORDR INNER JOIN dbo.RDR1 ON dbo.ORDR.DocEntry = dbo.RDR1.DocEntry
                                     WHERE dbo.ORDR.DocNum = '{0}' and dbo.RDR1.ItemCode = '{1}'
                                     """.format(orderDocNum, item['itemcode'])
 
             lineNum = self.getLineNum(find_ordr_linenum_sql)
+            print(lineNum)
             test = int(lineNum[0]['LineNum'])
+            delivery.Lines.ItemCode = lineNum[0]['ItemCode']
+            print(test)
+            testarr.append(test)
             delivery.Lines.BaseLine = test
             #delivery.Lines.BaseRef = orderDocNum
             delivery.Lines.BaseType = 17
-            delivery.Lines.BaseEntry = orderDocEntry
+            delivery.Lines.BaseEntry = int(orderDocEntry)
+            delivery.Lines.Add()
             i = i + 1
         if o['order_tax'] != '0.00':
-            find_ordr_linenum_sql="""SELECT dbo.RDR1.LineNum
+            find_ordr_linenum_sql="""SELECT dbo.RDR1.LineNum, dbo.RDR1.ItemCode
                                     FROM dbo.ORDR INNER JOIN dbo.RDR1 ON dbo.ORDR.DocEntry = dbo.RDR1.DocEntry
-                                    WHERE dbo.ORDR.DocNum = '{0}' and dbo.RDR1.ItemCode = '{1}'
-                                    """.format(orderDocNum, item['itemcode'])
+                                    WHERE dbo.ORDR.DocNum = '{0}' and dbo.RDR1.ItemCode = '{1}' and dbo.RDR1.LineStatus = 'O'
+                                    """.format(orderDocNum, "SALESTAX")
             lineNum = self.getLineNum(find_ordr_linenum_sql)
             if lineNum:
-                delivery.Lines.Add()
-                delivery.Lines.SetCurrentLine(i)
-                delivery.Lines.ItemCode = 'SALESTAX'
-                delivery.Lines.TaxCode = 'FLEX'
-                delivery.Lines.Quantity = 1
-                delivery.Lines.UnitPrice = o['order_tax']
+                # delivery.Lines.SetCurrentLine(i)
+                delivery.Lines.ItemCode = lineNum[0]['ItemCode']
+                # delivery.Lines.TaxCode = 'FLEX'
+                #delivery.Lines.Quantity = 1
+                # delivery.Lines.UnitPrice = o['order_tax']
                 test = int(lineNum[0]['LineNum'])
+                findItem = lineNum[0]['ItemCode']
                 delivery.Lines.BaseLine = test
                 #delivery.Lines.BaseRef = orderDocNum
                 delivery.Lines.BaseType = 17
-                delivery.Lines.BaseEntry = orderDocEntry
+                delivery.Lines.BaseEntry = int(orderDocEntry)
+                delivery.Lines.Add()
+                testarr.append(test)
         lRetCode = delivery.Add()
         if lRetCode != 0:
             error = str(self.com_adaptor.company.GetLastError())
             current_app.logger.error(error)
             #Send email error
-            smtp_server = smtplib.SMTP('smtp.gmail.com', 587)
-            smtp_server.ehlo()
-            smtp_server.starttls()
-            smtp_server.login('sender@sender.com', 'Password')
-            smtp_server.sendmail('replyto@sender.com', 'recipient@recipient.com', 'Subject: SAPB1Int: ODLN Error!\nError adding delivery for ' + o['U_WebOrderId'] + '. Error ' + error + '. Fix issue, then manually import order.')
-            smtp_server.quit()
-            raise Exception(error, o['U_WebOrderId'])
+            fromaddr = 'sapb1@riflepaperco.com'
+            toaddrs  = 'helpdesk@riflepaperco.com'
+            msg = "\r\n".join([
+              "From: sapb1@riflepaperco.com",
+              "To: helpdesk@riflepaperco.com",
+              "Subject: SAPB1Int: Error adding Delivery " + o['U_WebOrderId'],
+              "",
+              "Error adding delivery (ODLN) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually import delivery."
+              ])
+            username = 'apps@riflepaperco.com'
+            password = 'pass'
+            server = smtplib.SMTP('smtp.gmail.com:587')
+            server.starttls()
+            server.login(username,password)
+            server.sendmail(fromaddr, toaddrs, msg)
+            server.quit()
+            raise Exception(error, o['U_WebOrderId'], test, lineNum, o['items'], orderDocEntry, orderDocNum, testarr, delivery.Lines)
 
-        deliveries =  self.getShipments(num=1, columns=['DocEntry', 'DocTotal', 'DocNum'], params=params)
-        deliveryDocEntry = deliveries[0]['DocEntry']
-        deliveryDocTotal = deliveries[0]['DocTotal']
-        deliveryDocNum = deliveries[0]['DocNum']
+        # deliveries =  self.getShipments(num=1, columns=['DocEntry', 'DocTotal', 'DocNum'], params=params)
+
+        find_delivery_sql = """
+                            SELECT top 1 dbo.ODLN.DocEntry, dbo.ODLN.DocNum, dbo.ODLN.DocTotal
+                            FROM dbo.ODLN
+                            WHERE dbo.ODLN.U_WebOrderId='{0}' and dbo.ODLN.DocStatus = 'O'
+                            ORDER BY dbo.ODLN.DocNum DESC
+                        """.format(o['U_WebOrderId'])
+
+        latestDelivery = self.getLatestOrder(find_delivery_sql)
+
+
+        deliveryDocEntry = latestDelivery[0]['DocEntry']
+        deliveryDocTotal = latestDelivery[0]['DocTotal']
+        deliveryDocNum = latestDelivery[0]['DocNum']
 
 
         invoice =  com.company.GetBusinessObject(com.constants.oInvoices)
 
+        invoice.DocDate = o['order_date']
         invoice.DocDueDate = o['doc_due_date']
-        invoice.CardCode = 'C105212'
-        #order.NumAtCard = str(o['num_at_card'])
-        # UDF for Magento Web Order ID
-        invoice.UserFields.Fields("U_OrderSource").Value = 'Web Order'
-        invoice.UserFields.Fields("U_WebOrderId").Value = str(o['U_WebOrderId'])
-        invoice.UserFields.Fields("U_TWBS_ShipTo_FName").Value = str(o['shipping_first_name'])
-        invoice.UserFields.Fields("U_TWBS_ShipTo_Lname").Value = str(o['shipping_last_name'])
-        invoice.UserFields.Fields("U_web_order_fname").Value = str(o['order_first_name'])
-        invoice.UserFields.Fields("U_web_order_lname").Value = str(o['order_last_name'])
-        invoice.UserFields.Fields("U_web_orderphone").Value = str(o['order_phone'])
-        invoice.UserFields.Fields("U_web_shipphone").Value = str(o['shipping_phone'])
-        invoice.UserFields.Fields("U_Web_CC_Last4").Value = str(o['cc_last4'])
-        invoice.UserFields.Fields("U_TWBS_ShipTo_Email").Value = str(o['order_email'])
+        # invoice.CardCode = 'C105212'
+        # #order.NumAtCard = str(o['num_at_card'])
+        # # UDF for Magento Web Order ID
+        # invoice.UserFields.Fields("U_OrderSource").Value = 'Web Order'
+        # invoice.UserFields.Fields("U_WebOrderId").Value = str(o['U_WebOrderId'])
+        # invoice.UserFields.Fields("U_TWBS_ShipTo_FName").Value = str(o['shipping_first_name'])
+        # invoice.UserFields.Fields("U_TWBS_ShipTo_Lname").Value = str(o['shipping_last_name'])
+        # invoice.UserFields.Fields("U_web_order_fname").Value = str(o['order_first_name'])
+        # invoice.UserFields.Fields("U_web_order_lname").Value = str(o['order_last_name'])
+        # invoice.UserFields.Fields("U_web_orderphone").Value = str(o['order_phone'])
+        # invoice.UserFields.Fields("U_web_shipphone").Value = str(o['shipping_phone'])
+        # invoice.UserFields.Fields("U_Web_CC_Last4").Value = str(o['cc_last4'])
+        # invoice.UserFields.Fields("U_TWBS_ShipTo_Email").Value = str(o['order_email'])
 
-        if o['cc_type'] == 'MASTERCARD':
-            invoice.UserFields.Fields("U_web_cc_type").Value = 'MC'
-        elif o['cc_type'] == 'VISA':
-            invoice.UserFields.Fields("U_web_cc_type").Value = 'VISA'
-        elif o['cc_type'] == 'AMERICAN EXPRESS':
-            invoice.UserFields.Fields("U_web_cc_type").Value = 'AMEX'
-        elif o['cc_type'] == 'DISCOVER':
-            invoice.UserFields.Fields("U_web_cc_type").Value = 'DC'
+        # if o['cc_type'] == 'MASTERCARD':
+        #     invoice.UserFields.Fields("U_web_cc_type").Value = 'MC'
+        # elif o['cc_type'] == 'VISA':
+        #     invoice.UserFields.Fields("U_web_cc_type").Value = 'VISA'
+        # elif o['cc_type'] == 'AMERICAN EXPRESS':
+        #     invoice.UserFields.Fields("U_web_cc_type").Value = 'AMEX'
+        # elif o['cc_type'] == 'DISCOVER':
+        #     invoice.UserFields.Fields("U_web_cc_type").Value = 'DC'
 
-        if o['user_id']:
-            invoice.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id'])
+        # if o['user_id']:
+        #     invoice.UserFields.Fields("U_WebCustomerID").Value = str(o['user_id'])
 
-        if 'order_shipping_cost' in o.keys():
+        if shiptotal:
             invoice.Expenses.ExpenseCode = 1
-            invoice.Expenses.LineTotal = o['order_shipping_cost']
+            invoice.Expenses.LineTotal = shiptotal[0]['LineTotal']
             invoice.Expenses.TaxCode = 'FLEX'
             invoice.Expenses.BaseDocEntry = deliveryDocEntry
             invoice.Expenses.BaseDocLine = 0
             invoice.Expenses.BaseDocType = 15
 
-        if 'discount_percent' in o.keys():
-            invoice.DiscountPercent = o['discount_percent']
+        # if 'discount_percent' in o.keys():
+        #     invoice.DiscountPercent = o['discount_percent']
 
-        # Set Shipping Type
-        if 'transport_name' in o.keys():
-            pass
+        # # Set Shipping Type
+        # if 'transport_name' in o.keys():
+        #     code = self.getShipCode(o['transport_name'])
+        #     invoice.TransportationCode = code
 
 
-        # Set Payment Method
-        if 'payment_method' in o.keys():
-            invoice.PaymentMethod = o['payment_method']
+        # # Set Payment Method
+        # if 'payment_method' in o.keys():
+        #     invoice.PaymentMethod = o['payment_method']
 
-        ## Set bill to address properties
-        invoice.AddressExtension.BillToCity = o['billto_city']
-        invoice.AddressExtension.BillToCountry = o['billto_country']
-        invoice.AddressExtension.BillToState = o['billto_state']
-        invoice.AddressExtension.BillToStreet = o['billto_address']
-        invoice.AddressExtension.BillToZipCode = o['billto_zipcode']
+        # ## Set bill to address properties
+        # invoice.AddressExtension.BillToCity = o['billto_city']
+        # invoice.AddressExtension.BillToCountry = o['billto_country']
+        # invoice.AddressExtension.BillToState = o['billto_state']
+        # invoice.AddressExtension.BillToStreet = o['billto_address']
+        # invoice.AddressExtension.BillToZipCode = o['billto_zipcode']
 
-        ## Set ship to address properties
-        invoice.AddressExtension.ShipToCity = o['shipto_city']
-        invoice.AddressExtension.ShipToCountry = o['shipto_country']
-        invoice.AddressExtension.ShipToState = o['shipto_state']
-        invoice.AddressExtension.ShipToStreet = o['shipto_address']
-        invoice.AddressExtension.ShipToZipCode = o['shipto_zipcode']
+        # ## Set ship to address properties
+        # invoice.AddressExtension.ShipToCity = o['shipto_city']
+        # invoice.AddressExtension.ShipToCountry = o['shipto_country']
+        # invoice.AddressExtension.ShipToState = o['shipto_state']
+        # invoice.AddressExtension.ShipToStreet = o['shipto_address']
+        # invoice.AddressExtension.ShipToZipCode = o['shipto_zipcode']
 
-        # Set Comments
-        if 'comments' in o.keys():
-            invoice.Comments = o['comments']
+        # # Set Comments
+        # if 'comments' in o.keys():
+            # invoice.Comments = o['comments']
 
         i = 0
         for item in o['items']:
-            invoice.Lines.Add()
-            invoice.Lines.SetCurrentLine(i)
+            # invoice.Lines.SetCurrentLine(i)
             invoice.Lines.ItemCode = item['itemcode']
             invoice.Lines.Quantity = float(item['quantity'])
             #delivery.Lines.BaseEntry = float(orderDocEntry)
@@ -1158,27 +1400,28 @@ class SAPB1Adaptor(object):
             invoice.Lines.BaseLine = test
             #delivery.Lines.BaseRef = orderDocNum
             invoice.Lines.BaseType = 15
-            invoice.Lines.BaseEntry = deliveryDocEntry
+            invoice.Lines.BaseEntry = int(deliveryDocEntry)
+            invoice.Lines.Add()
             i = i + 1
         if o['order_tax'] != '0.00':
             find_odln_linenum_sql="""SELECT dbo.DLN1.LineNum
                                     FROM dbo.ODLN INNER JOIN dbo.DLN1 ON dbo.ODLN.DocEntry = dbo.DLN1.DocEntry
-                                    WHERE dbo.ODLN.DocNum = '{0}' and dbo.DLN1.ItemCode = '{1}'
-                                    """.format(deliveryDocNum, item['itemcode'])
+                                    WHERE dbo.ODLN.DocNum = '{0}' and dbo.DLN1.ItemCode = 'SALESTAX' and dbo.DLN1.LineStatus = 'O'
+                                    """.format(deliveryDocNum)
 
             lineNum = self.getLineNum(find_odln_linenum_sql)
             if lineNum:
+                # invoice.Lines.SetCurrentLine(i)
                 test = int(lineNum[0]['LineNum'])
                 invoice.Lines.BaseLine = test
                 #delivery.Lines.BaseRef = orderDocNum
                 invoice.Lines.BaseType = 15
-                invoice.Lines.BaseEntry = deliveryDocEntry
-                invoice.Lines.Add()
-                invoice.Lines.SetCurrentLine(i)
+                invoice.Lines.BaseEntry = int(deliveryDocEntry)
                 invoice.Lines.ItemCode = 'SALESTAX'
                 invoice.Lines.Quantity = 1
                 invoice.Lines.TaxCode = 'FLEX'
                 invoice.Lines.UnitPrice = o['order_tax']
+                invoice.Lines.Add()
 
         paramsDownPayment = {'U_WebOrderId': {'value': str(o['U_WebOrderId'])}}
         downPayment = self.getDownPayment(num=1, columns=['DocEntry', 'DocNum'], params=paramsDownPayment)
@@ -1193,13 +1436,23 @@ class SAPB1Adaptor(object):
             error = str(self.com_adaptor.company.GetLastError())
             current_app.logger.error(error)
             #Send email error
-            smtp_server = smtplib.SMTP('smtp.gmail.com', 587)
-            smtp_server.ehlo()
-            smtp_server.starttls()
-            smtp_server.login('sender@sender.com', 'Password')
-            smtp_server.sendmail('replyto@sender.com', 'recipient@recipient.com', 'Subject: SAPB1Int: OINV Error!\nError adding invoice for ' + o['U_WebOrderId'] + '. Error ' + error + '. Fix issue, then manually import order.')
-            smtp_server.quit()
-            raise Exception(error, o['U_WebOrderId'])
+            fromaddr = 'sapb1@riflepaperco.com'
+            toaddrs  = 'helpdesk@riflepaperco.com'
+            msg = "\r\n".join([
+              "From: sapb1@riflepaperco.com",
+              "To: helpdesk@riflepaperco.com",
+              "Subject: SAPB1Int: Error adding A/R Invoice " + o['U_WebOrderId'],
+              "",
+              "Error adding A/R Invoice (OINV) " + o['U_WebOrderId'] + " with error " + error + ". Fix issue, then manually import invoice."
+              ])
+            username = 'apps@riflepaperco.com'
+            password = 'pass'
+            server = smtplib.SMTP('smtp.gmail.com:587')
+            server.starttls()
+            server.login(username,password)
+            server.sendmail(fromaddr, toaddrs, msg)
+            server.quit()
+            raise Exception(error, o['U_WebOrderId'], test, i, deliveryDocEntry)
 
 
 
